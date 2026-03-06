@@ -72,7 +72,8 @@ public class BrownScreensaverView: ScreenSaverView {
         item.preferredForwardBufferDuration = 5.0
 
         let queuePlayer = AVQueuePlayer()
-        queuePlayer.isMuted = true
+        queuePlayer.isMuted = false
+        queuePlayer.volume = 1.0
         queuePlayer.actionAtItemEnd = .none
         self.player = queuePlayer
 
@@ -169,11 +170,21 @@ public class BrownScreensaverView: ScreenSaverView {
             p.currentItem?.status == .readyToPlay
         else { return }
 
-        NSLog("BrownScreensaver: isReadyForDisplay + readyToPlay - starting playback")
+        NSLog("BrownScreensaver: isReadyForDisplay + readyToPlay (isPreview=\(isPreview)) - starting playback")
+        
+        // Ensure audio is active
+        p.isMuted = false
+        p.volume = 1.0
+        
         p.play()
+        
+        // Final check on rate/status
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            NSLog("BrownScreensaver: Final check - rate=\(p.rate) status=\(p.timeControlStatus.rawValue) volume=\(p.volume) muted=\(p.isMuted)")
+        }
     }
 
-    // MARK: - Sleep / Wake
+    // MARK: - Sleep / Wake / System Events
 
     private func registerSleepWakeObservers() {
         let nc = NSWorkspace.shared.notificationCenter
@@ -181,6 +192,19 @@ public class BrownScreensaverView: ScreenSaverView {
                        name: NSWorkspace.screensDidSleepNotification, object: nil)
         nc.addObserver(self, selector: #selector(handleScreensWake),
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
+
+        // Distributed Notifications: handle stop signals from the system more reliably than view lifecycle.
+        // These fire immediately when the user dismisses the screensaver or unlocks.
+        let dc = DistributedNotificationCenter.default()
+        dc.addObserver(self, selector: #selector(handleForcedStop),
+                       name: NSNotification.Name("com.apple.screensaver.willstop"), object: nil)
+        dc.addObserver(self, selector: #selector(handleForcedStop),
+                       name: NSNotification.Name("com.apple.screenIsUnlocked"), object: nil)
+    }
+
+    @objc private func handleForcedStop() {
+        NSLog("BrownScreensaver: handleForcedStop (DistributedNotification) — tearing down player")
+        teardownPlayer()
     }
 
     @objc private func handleScreensSleep() {
@@ -228,6 +252,7 @@ public class BrownScreensaverView: ScreenSaverView {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(
             self, name: AVPlayerItem.playbackStalledNotification, object: nil)
+        DistributedNotificationCenter.default().removeObserver(self)
 
         if let item = observedItem {
             item.removeObserver(self, forKeyPath: "status", context: &kvoItemStatus)
@@ -260,14 +285,24 @@ public class BrownScreensaverView: ScreenSaverView {
 
     public override func startAnimation() {
         super.startAnimation()
-        NSLog("BrownScreensaver: startAnimation")
+        NSLog("BrownScreensaver: startAnimation isPreview=\(isPreview)")
+        
+        // If we tore down the player in stopAnimation, rebuild it now
+        if player == nil {
+            NSLog("BrownScreensaver: Player is nil, rebuilding for startAnimation")
+            setupVideoPlayer()
+        }
+        
         playIfReady()
     }
 
     public override func stopAnimation() {
         super.stopAnimation()
-        NSLog("BrownScreensaver: stopAnimation")
-        player?.pause()
+        NSLog("BrownScreensaver: stopAnimation (isPreview=\(isPreview))")
+        
+        // Aggressive teardown: release all AV resources immediately to prevent
+        // audio leaking into the background when the Preview window is closed.
+        teardownPlayer()
     }
 
     public override func draw(_ rect: NSRect) {

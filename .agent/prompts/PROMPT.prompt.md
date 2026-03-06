@@ -39,13 +39,23 @@ AVPlayer can stall due to buffer underruns or OS-level resource suspension.
 The `swift-frontend` compiler on Tahoe 26.3 crashes when using modern Swift `observe(\.keyPath) { ... }` closures inside class methods that assign to stored properties.
 - **Rule**: Use **Objective-C style KVO** (`addObserver:forKeyPath:options:context:` + `observeValue` override) for stability.
 
-### 5. Proper Teardown
-- **Rule**: In `teardownPlayer()`, ensure all KVO observers and NotificationCenter observers are removed **before** setting the player/layer to `nil` to prevent leaks or "removed observer that wasn't registered" crashes.
+### 5. Audio Support
+- **Rule**: By default, screensavers are muted. To enable sound, explicitly set `player?.isMuted = false` and `player?.volume = 1.0` inside `playIfReady()`. Note that `AVAudioSession` is **unavailable** on macOS; all audio control happens at the `AVQueuePlayer` level.
+
+### 6. Post-Unlock Cutoff (Distributed Notifications)
+- **Problem**: `stopAnimation()` is often delayed by macOS on unlock, causing sound to leak into the desktop.
+- **Rule**: Register for system-wide **Distributed Notifications**: `com.apple.screensaver.willstop` and `com.apple.screenIsUnlocked`.
+- **Rule**: Call `teardownPlayer()` immediately inside these notification handlers to kill audio/video resources instantly upon user resume.
+
+### 7. Proper Teardown
+- **Rule**: In `teardownPlayer()`, ensure all KVO observers, standard Notifications, and **Distributed Notifications** are removed **before** setting the player/layer to `nil` to prevent leaks or "removed observer that wasn't registered" crashes.
 
 ## Build Instructions
 - `make`: Builds the `.saver` bundle into the `build/` directory.
 - `make install`: Moves the bundle to `~/Library/Screen Savers/`.
-- `make clean`: Removes build artifacts.
+- `make uninstall`: Removes the screensaver from `~/Library/Screen Savers/`.
+- `make reinstall`: Uninstalls, cleans, rebuilds, and installs the screensaver.
+- `make clean`: Removes local build artifacts.
 
 ## File Map
 - `BrownScreensaver.swift`: Main logic and AV stack implementation.

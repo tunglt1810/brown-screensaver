@@ -17,9 +17,11 @@ CONTENTS_DIR = $(BUNDLE_DIR)/Contents
 MACOS_DIR = $(CONTENTS_DIR)/MacOS
 RESOURCES_DIR = $(CONTENTS_DIR)/Resources
 
-.PHONY: all clean install uninstall
+.PHONY: all clean install uninstall reinstall
 
 all: $(BUNDLE_DIR)
+
+reinstall: uninstall clean all install
 
 $(BUNDLE_DIR): BrownScreensaver.swift Info.plist
 	@echo "Building $(PRODUCT_NAME)..."
