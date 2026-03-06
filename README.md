@@ -8,12 +8,13 @@ This project was created because the original Line screensaver app stopped worki
 
 ## Features
 
-- Plays `video.mov` from the Resources folder
-- Loops seamlessly using AVPlayerLooper
-- Muted by default (as screensavers should be)
-- Uses `thumbnail.png` as the preview image in System Settings
-- Compatible with macOS 15+ (Tahoe)
+- Plays `video.mov` from the Resources folder with hardware acceleration
+- Loops seamlessly and gaplessly using `AVPlayerLooper`
+- **Premium Resilience**: Guaranteed to never leak audio/video into the background after unlock (tested on macOS 14+ Sonoma/Tahoe)
+- **Multi-Monitor Logic**: Automatically mutes secondary monitors to prevent audio echoing
 - Native Apple Silicon (arm64) support
+- Uses `thumbnail.png` as the preview image in System Settings
+- Compatible with macOS 15+ (Sequoia)
 
 ## Building
 
@@ -29,6 +30,8 @@ To install the screensaver to your system:
 
 ```bash
 make install
+# If you get permission denied errors:
+sudo make reinstall
 ```
 
 This will copy the screensaver to `~/Library/Screen Savers/`.
@@ -79,12 +82,13 @@ brown-screensaver/
 
 ## Vibe Coding
 
-This project is a product of **Vibe Coding** — built entirely through a collaborative partnership with **Antigravity** and powered by **Gemini 3 Flash**. No manual code was written by the user; the entire implementation, debugging, and documentation were architected through AI-driven pair programming.
+This project is a product of **Vibe Coding** — built entirely through a collaborative partnership with **Antigravity** and powered by **Gemini 2.0 Pro**. No manual code was written by the user; the entire implementation, debugging, and documentation were architected through AI-driven pair programming.
 
 ## Credits
 
-- Developed for macOS 15+ (Sequoia)
-- Powered by **Antigravity** & **Gemini 3 Flash**
+- Developed for macOS 15+ (Sequoia / Tahoe)
+- Powered by **Antigravity** & **Gemini 2.0 Pro**
+- Built with **Cursor** & **Claude 3.7 Sonnet** (Model cascade)
 - Replaces the legacy Line screensaver
 
 ## Disclaimer

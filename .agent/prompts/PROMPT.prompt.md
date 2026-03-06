@@ -17,52 +17,42 @@ A premium, high-performance macOS screensaver that seamlessly loops a bundled hi
 - **Playback**: `AVQueuePlayer` + `AVPlayerLooper` for gapless, zero-CPU-overhead looping.
 - **Hardware Acceleration**: Video is decoded via hardware; `animateOneFrame` is left empty as AVFoundation handles frame timing.
 
-## Critical Resilience Patterns (The "Black Screen" Fixes)
-When modifying or extending this project, you **must** adhere to these resilience patterns to prevent the common macOS "black screen" screensaver bug:
+## Critical Resilience Patterns (Prevention of Background Audio/Leaks)
+When modifying this project, you **must** follow these rules to ensure the video player doesn't leak into the background or "resurrect" after the screensaver is closed:
 
-### 1. The Sonoma/Tahoe "LegacyScreenSaver" Delay
-On macOS 14+, the `legacyScreenSaver` process attaches the view to the window asynchronously. 
-- **Rule**: Defer `setupVideoPlayer()` by ~100ms via `DispatchQueue.main.asyncAfter` in `init`. If initialized too early, the layer has no window backing and renders black.
+### 1. Deferred Driver Initialization
+- **Rule**: Never call `setupVideoPlayer()` in `init` or `configureView`. 
+- **Rule**: Only initialize the AV stack inside `startAnimation()`. 
+- **Rule**: On macOS 14+ (Sonoma/Tahoe), add a 100ms `asyncAfter` delay inside `startAnimation()` before calling `setupVideoPlayer()` to ensure the view is properly attached to its window.
 
-### 2. Full Stack Rebuild on Wake
-The system suspends `AVFoundation` when the display sleeps. Resuming doesn't always work.
-- **Rule**: Observe `NSWorkspace.screensDidWakeNotification`. On wake, **teardown and rebuild** the entire `AVQueuePlayer` and `AVPlayerLooper` stack from scratch.
+### 2. Triple-State Guarding (The "Zombie Player" Fix)
+Use three boolean flags to strictly control the player lifecycle:
+- **`isAnimating`**: (Native) Only play/recover if the screensaver process is active.
+- **`isIntentionalPause`**: Set to `true` inside `handleScreensSleep` and `stopAnimation`. This prevents KVO `timeControlStatus` changes from triggering an "unexpected stall" recovery cycle while the OS actually wants the player to stay paused.
+- **`isTornDown`**: Set to `true` inside `teardownPlayer()`. This is critical for blocking delayed `DispatchQueue` blocks (recovery or initialization) from creating a new player *after* the user has already unlocked the computer.
 
-### 3. Stall & Status Guarding
-AVPlayer can stall due to buffer underruns or OS-level resource suspension.
-- **Rule**: Catch `AVPlayerItem.playbackStalledNotification` and trigger a stack recovery.
-- **Rule**: Use a `playIfReady()` guard. Never call `play()` unless BOTH:
-    1. `AVPlayerItem.status == .readyToPlay`
-    2. `AVPlayerLayer.isReadyForDisplay == true`
+### 3. Aggressive Teardown Signaling
+- **Rule**: `stopAnimation()` is not reliable on macOS. Always override `viewDidMoveToWindow()` and call `teardownPlayer()` if `self.window == nil`.
+- **Rule**: Register for **Distributed Notifications**: `com.apple.screensaver.willstop` and `com.apple.screenIsUnlocked` to kill resources instantly on user resume.
+- **Rule**: In `teardownPlayer()`, call `playerLooper?.disableLooping()`, `player?.pause()`, and `player?.removeAllItems()` before nil-ing the player.
 
-### 4. Compiler Compatibility (Tahoe 26.3 Bug)
-The `swift-frontend` compiler on Tahoe 26.3 crashes when using modern Swift `observe(\.keyPath) { ... }` closures inside class methods that assign to stored properties.
-- **Rule**: Use **Objective-C style KVO** (`addObserver:forKeyPath:options:context:` + `observeValue` override) for stability.
+### 4. Recovery & Wake Management
+- **Rule**: On `NSWorkspace.screensDidWakeNotification`, wait 0.5s then call `recoverPlayback()` ONLY if `isAnimating` is true and `isTornDown` is false.
+- **Rule**: If a player stall is detected via KVO, verify `!isIntentionalPause` before attempting to rebuild the stack.
 
 ### 5. Multi-Monitor Audio Sync
-- **Problem**: macOS instantiates a separate `ScreenSaverView` for each connected monitor. If all of them play audio, the sounds will overlap and echo.
-- **Rule**: Use a global lock (`static var activeAudioInstance: ObjectIdentifier?`) to ensure only **one** instance sets `targetVolume = 1.0`, while all other instances must be muted (`volume = 0.0`). The lock must be released in `teardownPlayer()`.
+- **Rule**: Use a global lock (`static var activeAudioInstance: ObjectIdentifier?`) to ensure only **one** instance plays audio (`volume = 1.0`, `isMuted = false`). All other instances must be muted. Release the lock in `teardownPlayer()`.
 
-### 6. Audio Support
-- **Rule**: By default, screensavers are muted. To enable sound for the *active* instance, explicitly set `player?.isMuted = false` and `player?.volume = 1.0` inside `playIfReady()`. Note that `AVAudioSession` is **unavailable** on macOS; all audio control happens at the `AVQueuePlayer` level.
-
-### 6. Post-Unlock Cutoff (Distributed Notifications)
-- **Problem**: `stopAnimation()` is often delayed by macOS on unlock, causing sound to leak into the desktop.
-- **Rule**: Register for system-wide **Distributed Notifications**: `com.apple.screensaver.willstop` and `com.apple.screenIsUnlocked`.
-- **Rule**: Call `teardownPlayer()` immediately inside these notification handlers to kill audio/video resources instantly upon user resume.
-
-### 7. Proper Teardown
-- **Rule**: In `teardownPlayer()`, ensure all KVO observers, standard Notifications, and **Distributed Notifications** are removed **before** setting the player/layer to `nil` to prevent leaks or "removed observer that wasn't registered" crashes.
+### 6. Compiler Compatibility (Tahoe 26.3 Bug)
+- **Rule**: Never use modern Swift `observe(\.keyPath)` closures. Use **Objective-C style KVO** (`addObserver:forKeyPath:options:context:` + `observeValue` override) to prevent `swift-frontend` compiler crashes on certain macOS versions.
 
 ## Build Instructions
 - `make`: Builds the `.saver` bundle into the `build/` directory.
-- `make install`: Moves the bundle to `~/Library/Screen Savers/` and automatically kills `legacyScreenSaver` / `ScreenSaverEngine` to refresh the OS cache.
-- `make uninstall`: Removes the screensaver from `~/Library/Screen Savers/`.
-- `make reinstall`: Uninstalls, cleans, rebuilds, and installs the screensaver (refreshing the cache).
-- `make clean`: Removes local build artifacts.
+- `make install`: Moves the bundle to `~/Library/Screen Savers/` (requires `sudo` if permissions are locked).
+- `make reinstall`: Full clean uninstall and fresh install (recommended for testing fixes).
 
 ## File Map
 - `BrownScreensaver.swift`: Main logic and AV stack implementation.
-- `Info.plist`: Bundle metadata (Principal class, Identifier).
+- `Info.plist`: Bundle metadata.
 - `Resources/video.mov`: The video asset.
 - `Makefile`: Compilation and installation rules.

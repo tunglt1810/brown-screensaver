@@ -28,6 +28,8 @@ public class BrownScreensaverView: ScreenSaverView {
 
     // Guard against concurrent recovery trips
     private var isRecovering = false
+    private var isIntentionalPause = false
+    private var isTornDown = false
 
     // MARK: - Initialization
 
@@ -49,19 +51,15 @@ public class BrownScreensaverView: ScreenSaverView {
         self.wantsLayer = true
         self.layer?.backgroundColor = NSColor.black.cgColor
 
-        // Aerial pattern: on macOS 14+ (Sonoma / Tahoe) legacyScreenSaver attaches
-        // the view to its window asynchronously. Starting AVFoundation too early
-        // causes the player layer to render pure black. A short async delay fixes this.
-        if #available(macOS 14.0, *) {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
-                self?.setupVideoPlayer()
-            }
-        } else {
-            setupVideoPlayer()
-        }
+        // Video setup is deferred to startAnimation() to avoid bugs where legacyScreenSaver 
+        // initializes the view but never starts it, leaving zombie players.
     }
 
     private func setupVideoPlayer() {
+        guard self.isAnimating else {
+            NSLog("BrownScreensaver: setupVideoPlayer aborted, isAnimating == false")
+            return
+        }
         guard let videoURL = Bundle(for: type(of: self))
                 .url(forResource: "video", withExtension: "mov") else {
             NSLog("BrownScreensaver: ERROR - video.mov not found in bundle")
@@ -70,6 +68,7 @@ public class BrownScreensaverView: ScreenSaverView {
 
         NSLog("BrownScreensaver: setupVideoPlayer()")
         teardownPlayer()
+        isTornDown = false
 
         // Build the AV stack
         let item = AVPlayerItem(url: videoURL)
@@ -151,7 +150,7 @@ public class BrownScreensaverView: ScreenSaverView {
             DispatchQueue.main.async { [weak self] in
                 // Only recover if the screensaver considers itself running
                 guard let self = self, self.isAnimating else { return }
-                if p.timeControlStatus == .paused {
+                if p.timeControlStatus == .paused && !self.isIntentionalPause {
                     NSLog("BrownScreensaver: timeControlStatus=paused unexpectedly - recovering")
                     self.scheduleRecovery()
                 }
@@ -173,6 +172,11 @@ public class BrownScreensaverView: ScreenSaverView {
             pLayer.isReadyForDisplay,
             p.currentItem?.status == .readyToPlay
         else { return }
+
+        guard self.isAnimating, !self.isTornDown else {
+            NSLog("BrownScreensaver: playIfReady aborted, isAnimating == false or isTornDown == true")
+            return
+        }
 
         NSLog("BrownScreensaver: isReadyForDisplay + readyToPlay (isPreview=\(isPreview)) - starting playback")
         
@@ -220,13 +224,16 @@ public class BrownScreensaverView: ScreenSaverView {
 
     @objc private func handleScreensSleep() {
         NSLog("BrownScreensaver: screens sleep - pausing")
+        isIntentionalPause = true
         player?.pause()
     }
 
     @objc private func handleScreensWake() {
         NSLog("BrownScreensaver: screens wake - scheduling recovery")
+        isIntentionalPause = false
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-            self?.recoverPlayback()
+            guard let self = self, self.isAnimating, !self.isTornDown else { return }
+            self.recoverPlayback()
         }
     }
 
@@ -244,7 +251,12 @@ public class BrownScreensaverView: ScreenSaverView {
         isRecovering = true
         NSLog("BrownScreensaver: scheduling full recovery in 1 s")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            self?.recoverPlayback()
+            guard let self = self else { return }
+            if !self.isAnimating || self.isTornDown {
+                self.isRecovering = false
+                return
+            }
+            self.recoverPlayback()
         }
     }
 
@@ -253,6 +265,10 @@ public class BrownScreensaverView: ScreenSaverView {
     private func recoverPlayback() {
         NSLog("BrownScreensaver: recoverPlayback - rebuilding AV stack")
         isRecovering = false
+        guard self.isAnimating, !self.isTornDown else {
+            NSLog("BrownScreensaver: recoverPlayback aborted, isAnimating == false or isTornDown == true")
+            return
+        }
         setupVideoPlayer()
         // Playback resumes automatically via observeValue once item + layer are ready.
     }
@@ -260,6 +276,8 @@ public class BrownScreensaverView: ScreenSaverView {
     // MARK: - Teardown
 
     private func teardownPlayer() {
+        isTornDown = true
+        isIntentionalPause = true
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(
             self, name: AVPlayerItem.playbackStalledNotification, object: nil)
@@ -278,7 +296,9 @@ public class BrownScreensaverView: ScreenSaverView {
             observedPlayer = nil
         }
 
+        playerLooper?.disableLooping()
         player?.pause()
+        player?.removeAllItems()
         player?.replaceCurrentItem(with: nil)
         player = nil
         playerLooper = nil
@@ -300,22 +320,45 @@ public class BrownScreensaverView: ScreenSaverView {
 
     // MARK: - ScreenSaverView Lifecycle
 
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if self.window == nil {
+            NSLog("BrownScreensaver: viewDidMoveToWindow (window=nil) - tearing down player")
+            teardownPlayer()
+        }
+    }
+
     public override func startAnimation() {
         super.startAnimation()
         NSLog("BrownScreensaver: startAnimation isPreview=\(isPreview)")
+        isIntentionalPause = false
+        isTornDown = false
         
         // If we tore down the player in stopAnimation, rebuild it now
         if player == nil {
             NSLog("BrownScreensaver: Player is nil, rebuilding for startAnimation")
-            setupVideoPlayer()
+            // Aerial pattern: on macOS 14+ (Sonoma / Tahoe) legacyScreenSaver attaches
+            // the view to its window asynchronously. Starting AVFoundation too early
+            // causes the player layer to render pure black. A short async delay fixes this.
+            if #available(macOS 14.0, *) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    guard let self = self, self.isAnimating, !self.isTornDown else { return }
+                    if self.player == nil {
+                        self.setupVideoPlayer()
+                    }
+                }
+            } else {
+                setupVideoPlayer()
+            }
+        } else {
+            playIfReady()
         }
-        
-        playIfReady()
     }
 
     public override func stopAnimation() {
         super.stopAnimation()
         NSLog("BrownScreensaver: stopAnimation (isPreview=\(isPreview))")
+        isIntentionalPause = true
         
         // Aggressive teardown: release all AV resources immediately to prevent
         // audio leaking into the background when the Preview window is closed.

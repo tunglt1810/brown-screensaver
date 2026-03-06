@@ -65,56 +65,76 @@
        ▼
 ┌──────────────────────────────────────┐
 │ init(frame:isPreview:)               │
-│ - Create view                        │
+│ - Create view (isAnimating = false)  │
 │ - Call configureView()               │
 └──────┬───────────────────────────────┘
        │
-       │ 2. Setup
+       │ 2. Configure View
        ▼
 ┌──────────────────────────────────────┐
-│ configureView() & setupVideoPlayer() │
-│ - Load video.mov from bundle         │
-│ - Create AVPlayerItem                │
-│ - Create AVQueuePlayer               │
-│ - Setup AVPlayerLooper               │
-│ - Create AVPlayerLayer               │
-│ - Add layer to view                  │
-│ - Mute audio                         │
+│ configureView()                      │
+│ - Set wantsLayer = true              │
+│ - Initialize background & layout     │
+│ - (Video setup is DEFERRED)          │
 └──────┬───────────────────────────────┘
        │
-       │ 3. Start
+       │ 3. Start Animation
        ▼
 ┌──────────────────────────────────────┐
 │ startAnimation()                     │
+│ - isAnimating = true                 │
+│ - isTornDown = false                 │
+│ - isIntentionalPause = false         │
+│ - Delayed setupVideoPlayer()         │
+└──────┬───────────────────────────────┘
+       │
+       │ 4. Setup Video Stack
+       ▼
+┌──────────────────────────────────────┐
+│ setupVideoPlayer()                   │
+│ - Guard !isAnimating                 │
+│ - Rebuild AV stack (Item/Looper)     │
+│ - Register KVO & Notifications       │
+└──────┬───────────────────────────────┘
+       │
+       │ 5. Running
+       ▼
+┌──────────────────────────────────────┐
+│ playIfReady()                        │
+│ - Guard isAnimating && !isTornDown   │
+│ - Sync Multi-Monitor Audio Lock      │
 │ - player.play()                      │
-│ - Video starts playing               │
 └──────┬───────────────────────────────┘
        │
-       │ 4. Running
+       │ 6. Stop / Teardown
        ▼
 ┌──────────────────────────────────────┐
-│ animateOneFrame()                    │
-│ - Called periodically                │
-│ - No action needed (AVPlayer auto)   │
-└──────┬───────────────────────────────┘
-       │
-       │ 5. Stop
-       ▼
-┌──────────────────────────────────────┐
-│ stopAnimation()                      │
-│ - player.pause()                     │
-│ - Video pauses                       │
-└──────┬───────────────────────────────┘
-       │
-       │ 6. Cleanup
-       ▼
-┌──────────────────────────────────────┐
-│ deinit                               │
-│ - Remove observers                   │
-│ - Release player                     │
-│ - Release looper                     │
+│ stopAnimation() / viewDidMoveToWindow│
+│ - isIntentionalPause = true          │
+│ - teardownPlayer()                   │
+│ - isTornDown = true                  │
+│ - Remove all observers               │
+│ - Kill AV stack (disable looping)    │
 └──────────────────────────────────────┘
 ```
+
+## Resilience & Background Prevention
+
+To prevent video/audio from leaking into the background (especially after Face ID unlock or screen sleep), the architecture employs a "Triple-Guard" strategy:
+
+### 1. State Guarding Flags
+- **`isAnimating`**: Native macOS flag. Prevents starting playback if the system hasn't officially started the screensaver.
+- **`isIntentionalPause`**: Prevents KVO "stall" recovery from firing when the OS intentionally pauses the player for screen sleep.
+- **`isTornDown`**: Blocks all delayed `DispatchQueue` tasks (async setup or recovery) from creating/playing a player after the user has already returned to the desktop.
+
+### 2. Reliable Cleanup
+- **Overriding `viewDidMoveToWindow`**: macOS often fails to call `stopAnimation()` reliably on unlock. Overriding this view lifecycle method ensures `teardownPlayer()` is called whenever the view is detached from the UI.
+- **Distributed Notifications**: Listens for `com.apple.screenIsUnlocked` and `com.apple.screensaver.willstop` for immediate, system-wide teardown of AV resources.
+- **Aggressive AV Termination**: `teardownPlayer()` explicitly calls `playerLooper?.disableLooping()` and `player?.removeAllItems()` to force the AVFoundation stack to stop completely before release.
+
+### 3. Asymmetric Setup
+- **Delay (macOS 14+)**: On Sonoma/Tahoe, `legacyScreenSaver` attaches views asynchronously. A 100ms delay in `startAnimation` ensures the `AVPlayerLayer` has a valid window backing before rendering, avoiding the "black screen" bug.
+- **Deferred Initialization**: The `AVPlayer` stack is not created until `startAnimation` is called, preventing "zombie players" that might exist if the OS initializes the view but never displays it.
 
 ## Video Looping Mechanism
 
