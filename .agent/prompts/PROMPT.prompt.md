@@ -39,8 +39,12 @@ AVPlayer can stall due to buffer underruns or OS-level resource suspension.
 The `swift-frontend` compiler on Tahoe 26.3 crashes when using modern Swift `observe(\.keyPath) { ... }` closures inside class methods that assign to stored properties.
 - **Rule**: Use **Objective-C style KVO** (`addObserver:forKeyPath:options:context:` + `observeValue` override) for stability.
 
-### 5. Audio Support
-- **Rule**: By default, screensavers are muted. To enable sound, explicitly set `player?.isMuted = false` and `player?.volume = 1.0` inside `playIfReady()`. Note that `AVAudioSession` is **unavailable** on macOS; all audio control happens at the `AVQueuePlayer` level.
+### 5. Multi-Monitor Audio Sync
+- **Problem**: macOS instantiates a separate `ScreenSaverView` for each connected monitor. If all of them play audio, the sounds will overlap and echo.
+- **Rule**: Use a global lock (`static var activeAudioInstance: ObjectIdentifier?`) to ensure only **one** instance sets `targetVolume = 1.0`, while all other instances must be muted (`volume = 0.0`). The lock must be released in `teardownPlayer()`.
+
+### 6. Audio Support
+- **Rule**: By default, screensavers are muted. To enable sound for the *active* instance, explicitly set `player?.isMuted = false` and `player?.volume = 1.0` inside `playIfReady()`. Note that `AVAudioSession` is **unavailable** on macOS; all audio control happens at the `AVQueuePlayer` level.
 
 ### 6. Post-Unlock Cutoff (Distributed Notifications)
 - **Problem**: `stopAnimation()` is often delayed by macOS on unlock, causing sound to leak into the desktop.
@@ -52,9 +56,9 @@ The `swift-frontend` compiler on Tahoe 26.3 crashes when using modern Swift `obs
 
 ## Build Instructions
 - `make`: Builds the `.saver` bundle into the `build/` directory.
-- `make install`: Moves the bundle to `~/Library/Screen Savers/`.
+- `make install`: Moves the bundle to `~/Library/Screen Savers/` and automatically kills `legacyScreenSaver` / `ScreenSaverEngine` to refresh the OS cache.
 - `make uninstall`: Removes the screensaver from `~/Library/Screen Savers/`.
-- `make reinstall`: Uninstalls, cleans, rebuilds, and installs the screensaver.
+- `make reinstall`: Uninstalls, cleans, rebuilds, and installs the screensaver (refreshing the cache).
 - `make clean`: Removes local build artifacts.
 
 ## File Map

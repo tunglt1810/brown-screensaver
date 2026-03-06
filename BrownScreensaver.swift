@@ -11,6 +11,10 @@ private var kvoTimeControl:     UInt8 = 0
 @objc(BrownScreensaverView)
 public class BrownScreensaverView: ScreenSaverView {
 
+    // MARK: - Global State (Multi-Monitor Sync)
+    // Ensures only one instance plays audio when multiple screensavers are active
+    private static var activeAudioInstance: ObjectIdentifier?
+
     // MARK: - Private State
 
     private var playerLayer:  AVPlayerLayer?
@@ -172,9 +176,16 @@ public class BrownScreensaverView: ScreenSaverView {
 
         NSLog("BrownScreensaver: isReadyForDisplay + readyToPlay (isPreview=\(isPreview)) - starting playback")
         
-        // Ensure audio is active
-        p.isMuted = false
-        p.volume = 1.0
+        // Multi-Monitor Audio Sync:
+        // Only one instance should play audio. The first one to reach here claims the lock.
+        if BrownScreensaverView.activeAudioInstance == nil {
+            BrownScreensaverView.activeAudioInstance = ObjectIdentifier(self)
+            NSLog("BrownScreensaver: Instance claimed audio lock")
+        }
+        
+        let hasAudioLock = (BrownScreensaverView.activeAudioInstance == ObjectIdentifier(self))
+        p.isMuted = !hasAudioLock
+        p.volume = hasAudioLock ? 1.0 : 0.0
         
         p.play()
         
@@ -274,6 +285,12 @@ public class BrownScreensaverView: ScreenSaverView {
 
         playerLayer?.removeFromSuperlayer()
         playerLayer = nil
+
+        // Release the audio lock if this instance owned it
+        if BrownScreensaverView.activeAudioInstance == ObjectIdentifier(self) {
+            NSLog("BrownScreensaver: Instance releasing audio lock")
+            BrownScreensaverView.activeAudioInstance = nil
+        }
     }
 
     deinit {

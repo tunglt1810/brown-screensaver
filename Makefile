@@ -48,6 +48,9 @@ install: all
 	@rm -rf "$(INSTALL_DIR)/$(BUNDLE_NAME)"
 	@cp -R "$(BUNDLE_DIR)" "$(INSTALL_DIR)/"
 	@echo "Installation complete!"
+	@echo "Refreshing screensaver cache..."
+	@-killall -9 legacyScreenSaver 2>/dev/null || true
+	@-killall -9 ScreenSaverEngine 2>/dev/null || true
 	@echo "You can now select '$(PRODUCT_NAME)' in System Settings > Screen Saver"
 
 uninstall:
