@@ -2,6 +2,9 @@
 
 A macOS screensaver that plays a video in a loop.
 
+![Preview](lazy_brown.gif)
+
+
 ## Motivation
 
 This project was created because the original Line screensaver app stopped working starting from macOS 15 (Sequoia) and has not been updated. This is a modern, Swift-based alternative that works seamlessly on the latest macOS versions.
@@ -77,18 +80,19 @@ brown-screensaver/
 │   ├── video.mov            # Video to play
 │   ├── thumbnail.png        # Preview thumbnail
 │   └── ...                  # Localization files
+├── lazy_brown.gif           # Preview GIF
 └── README.md                # This file
+
 ```
 
 ## Vibe Coding
 
-This project is a product of **Vibe Coding** — built entirely through a collaborative partnership with **Antigravity** and powered by **Gemini 2.0 Pro**. No manual code was written by the user; the entire implementation, debugging, and documentation were architected through AI-driven pair programming.
+This project is a product of **Vibe Coding** — built entirely through a collaborative partnership with **Antigravity** and powered by **Gemini 3.1 Pro** & **Claude 4.6 Sonnet**. No manual code was written by the user; the entire implementation, debugging, and documentation were architected through AI-driven pair programming.
 
 ## Credits
 
 - Developed for macOS 15+ (Sequoia / Tahoe)
-- Powered by **Antigravity** & **Gemini 2.0 Pro**
-- Built with **Cursor** & **Claude 3.7 Sonnet** (Model cascade)
+- Powered by **Antigravity** & **Gemini 3.1 Pro** & **Claude 4.6 Sonnet**
 - Replaces the legacy Line screensaver
 
 ## Disclaimer
