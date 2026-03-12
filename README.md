@@ -7,7 +7,7 @@ A macOS screensaver that plays a video in a loop.
 
 ## Motivation
 
-This project was created because the original Line screensaver app stopped working starting from macOS 15 (Sequoia) and has not been updated. This is a modern, Swift-based alternative that works seamlessly on the latest macOS versions.
+This project was created because the original Line screensaver app stopped working starting from macOS 14 (Sonoma) and has not been updated. This is a modern, Swift-based alternative that works seamlessly on the latest macOS versions.
 
 ## Features
 
@@ -17,7 +17,7 @@ This project was created because the original Line screensaver app stopped worki
 - **Multi-Monitor Logic**: Automatically mutes secondary monitors to prevent audio echoing
 - Native Apple Silicon (arm64) support
 - Uses `thumbnail.png` as the preview image in System Settings
-- Compatible with macOS 15+ (Sequoia)
+- Compatible with macOS 14+ (Sonoma)
 
 ## Building
 
@@ -91,7 +91,7 @@ This project is a product of **Vibe Coding** — built entirely through a collab
 
 ## Credits
 
-- Developed for macOS 15+ (Sequoia / Tahoe)
+- Developed for macOS 14+ (Sonoma)
 - Powered by **Antigravity** & **Gemini 3.1 Pro** & **Claude 4.6 Sonnet**
 - Replaces the legacy Line screensaver
 
