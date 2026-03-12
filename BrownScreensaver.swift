@@ -31,6 +31,12 @@ public class BrownScreensaverView: ScreenSaverView {
     private var isIntentionalPause = false
     private var isTornDown = false
 
+    /// Returns true if the window is occluded (covered by another window like the Lock Screen).
+    private var isWindowOccluded: Bool {
+        guard let w = self.window else { return true }
+        return !w.occlusionState.contains(.visible)
+    }
+
     // MARK: - Initialization
 
     public override init?(frame: NSRect, isPreview: Bool) {
@@ -174,29 +180,26 @@ public class BrownScreensaverView: ScreenSaverView {
         else { return }
 
         guard self.isAnimating, !self.isTornDown else {
-            NSLog("BrownScreensaver: playIfReady aborted, isAnimating == false or isTornDown == true")
+            NSLog("BrownScreensaver: playIfReady aborted, isAnimating=\(self.isAnimating), isTornDown=\(self.isTornDown)")
             return
         }
 
         NSLog("BrownScreensaver: isReadyForDisplay + readyToPlay (isPreview=\(isPreview)) - starting playback")
-        
+
         // Multi-Monitor Audio Sync:
         // Only one instance should play audio. The first one to reach here claims the lock.
         if BrownScreensaverView.activeAudioInstance == nil {
             BrownScreensaverView.activeAudioInstance = ObjectIdentifier(self)
             NSLog("BrownScreensaver: Instance claimed audio lock")
         }
-        
+
         let hasAudioLock = (BrownScreensaverView.activeAudioInstance == ObjectIdentifier(self))
         p.isMuted = !hasAudioLock
         p.volume = hasAudioLock ? 1.0 : 0.0
-        
+
         p.play()
-        
-        // Final check on rate/status
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            NSLog("BrownScreensaver: Final check - rate=\(p.rate) status=\(p.timeControlStatus.rawValue) volume=\(p.volume) muted=\(p.isMuted)")
-        }
+
+        NSLog("BrownScreensaver: Playing - volume=\(p.volume) muted=\(p.isMuted)")
     }
 
     // MARK: - Sleep / Wake / System Events
@@ -208,8 +211,12 @@ public class BrownScreensaverView: ScreenSaverView {
         nc.addObserver(self, selector: #selector(handleScreensWake),
                        name: NSWorkspace.screensDidWakeNotification, object: nil)
 
-        // Distributed Notifications: handle stop signals from the system more reliably than view lifecycle.
-        // These fire immediately when the user dismisses the screensaver or unlocks.
+        // Window occlusion: detect when the Lock Screen covers the screensaver window.
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(handleOcclusionChange),
+            name: NSWindow.didChangeOcclusionStateNotification, object: nil)
+
+        // Distributed Notifications: handle stop signals from the system.
         let dc = DistributedNotificationCenter.default()
         dc.addObserver(self, selector: #selector(handleForcedStop),
                        name: NSNotification.Name("com.apple.screensaver.willstop"), object: nil)
@@ -222,18 +229,60 @@ public class BrownScreensaverView: ScreenSaverView {
         teardownPlayer()
     }
 
+    /// Called when ANY window's occlusion state changes.
+    /// When our window is covered (e.g. by the Lock Screen), mute + pause.
+    /// When our window becomes visible again, unmute + resume.
+    @objc private func handleOcclusionChange(_ notification: Notification) {
+        guard let notifWindow = notification.object as? NSWindow,
+              notifWindow === self.window else { return }
+
+        if isWindowOccluded {
+            NSLog("BrownScreensaver: window occluded (Lock Screen?) — muting and pausing")
+            isIntentionalPause = true
+            player?.isMuted = true
+            player?.volume = 0.0
+            player?.pause()
+        } else {
+            NSLog("BrownScreensaver: window visible again — resuming")
+            isIntentionalPause = false
+            // Re-apply audio based on the audio lock
+            if let p = player {
+                let hasAudioLock = (BrownScreensaverView.activeAudioInstance == ObjectIdentifier(self))
+                p.isMuted = !hasAudioLock
+                p.volume = hasAudioLock ? 1.0 : 0.0
+                p.play()
+                NSLog("BrownScreensaver: Resumed - volume=\(p.volume) muted=\(p.isMuted)")
+            }
+        }
+    }
+
     @objc private func handleScreensSleep() {
-        NSLog("BrownScreensaver: screens sleep - pausing")
+        NSLog("BrownScreensaver: screens sleep - muting and pausing")
         isIntentionalPause = true
+        player?.isMuted = true
+        player?.volume = 0.0
         player?.pause()
     }
 
     @objc private func handleScreensWake() {
-        NSLog("BrownScreensaver: screens wake - scheduling recovery")
+        NSLog("BrownScreensaver: screens wake - attempting muted resume")
         isIntentionalPause = false
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        // On wake, attempt a simple muted resume. Do NOT rebuild the AV stack.
+        // If the lock screen is active, occlusion handler will keep us muted.
+        // If the player is truly broken, the KVO stall handler will trigger recovery.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self, self.isAnimating, !self.isTornDown else { return }
-            self.recoverPlayback()
+            guard let p = self.player else { return }
+            if self.isWindowOccluded {
+                NSLog("BrownScreensaver: wake resume aborted — window is occluded")
+                return
+            }
+            // Resume with correct audio state
+            let hasAudioLock = (BrownScreensaverView.activeAudioInstance == ObjectIdentifier(self))
+            p.isMuted = !hasAudioLock
+            p.volume = hasAudioLock ? 1.0 : 0.0
+            p.play()
+            NSLog("BrownScreensaver: wake resumed - volume=\(p.volume) muted=\(p.isMuted)")
         }
     }
 
@@ -252,7 +301,8 @@ public class BrownScreensaverView: ScreenSaverView {
         NSLog("BrownScreensaver: scheduling full recovery in 1 s")
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
             guard let self = self else { return }
-            if !self.isAnimating || self.isTornDown {
+            if !self.isAnimating || self.isTornDown || self.isWindowOccluded {
+                NSLog("BrownScreensaver: recovery cancelled (isAnimating=\(self.isAnimating), isTornDown=\(self.isTornDown), occluded=\(self.isWindowOccluded))")
                 self.isRecovering = false
                 return
             }
@@ -261,12 +311,11 @@ public class BrownScreensaverView: ScreenSaverView {
     }
 
     /// Tears down and fully rebuilds the AV stack.
-    /// This is the definitive fix for stall-after-time and post-sleep black screen.
     private func recoverPlayback() {
         NSLog("BrownScreensaver: recoverPlayback - rebuilding AV stack")
         isRecovering = false
-        guard self.isAnimating, !self.isTornDown else {
-            NSLog("BrownScreensaver: recoverPlayback aborted, isAnimating == false or isTornDown == true")
+        guard self.isAnimating, !self.isTornDown, !self.isWindowOccluded else {
+            NSLog("BrownScreensaver: recoverPlayback aborted (isAnimating=\(self.isAnimating), isTornDown=\(self.isTornDown), occluded=\(self.isWindowOccluded))")
             return
         }
         setupVideoPlayer()
@@ -281,6 +330,8 @@ public class BrownScreensaverView: ScreenSaverView {
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(
             self, name: AVPlayerItem.playbackStalledNotification, object: nil)
+        NotificationCenter.default.removeObserver(
+            self, name: NSWindow.didChangeOcclusionStateNotification, object: nil)
         DistributedNotificationCenter.default().removeObserver(self)
 
         if let item = observedItem {
