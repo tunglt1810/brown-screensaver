@@ -31,6 +31,12 @@ public class BrownScreensaverView: ScreenSaverView {
     private var isIntentionalPause = false
     private var isTornDown = false
 
+    // Cancellable work items — prevents fire-and-forget closures from keeping
+    // the legacyScreenSaver process alive after the screensaver is dismissed.
+    private var setupWorkItem: DispatchWorkItem?
+    private var recoveryWorkItem: DispatchWorkItem?
+    private var wakeWorkItem: DispatchWorkItem?
+
     /// Returns true if the window is occluded (covered by another window like the Lock Screen).
     private var isWindowOccluded: Bool {
         guard let w = self.window else { return true }
@@ -270,7 +276,8 @@ public class BrownScreensaverView: ScreenSaverView {
         // On wake, attempt a simple muted resume. Do NOT rebuild the AV stack.
         // If the lock screen is active, occlusion handler will keep us muted.
         // If the player is truly broken, the KVO stall handler will trigger recovery.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        wakeWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             guard let self = self, self.isAnimating, !self.isTornDown else { return }
             guard let p = self.player else { return }
             if self.isWindowOccluded {
@@ -284,6 +291,8 @@ public class BrownScreensaverView: ScreenSaverView {
             p.play()
             NSLog("BrownScreensaver: wake resumed - volume=\(p.volume) muted=\(p.isMuted)")
         }
+        wakeWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     // MARK: - Stall Handling
@@ -299,7 +308,8 @@ public class BrownScreensaverView: ScreenSaverView {
         guard !isRecovering else { return }
         isRecovering = true
         NSLog("BrownScreensaver: scheduling full recovery in 1 s")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+        recoveryWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
             if !self.isAnimating || self.isTornDown || self.isWindowOccluded {
                 NSLog("BrownScreensaver: recovery cancelled (isAnimating=\(self.isAnimating), isTornDown=\(self.isTornDown), occluded=\(self.isWindowOccluded))")
@@ -308,6 +318,8 @@ public class BrownScreensaverView: ScreenSaverView {
             }
             self.recoverPlayback()
         }
+        recoveryWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     /// Tears down and fully rebuilds the AV stack.
@@ -327,6 +339,19 @@ public class BrownScreensaverView: ScreenSaverView {
     private func teardownPlayer() {
         isTornDown = true
         isIntentionalPause = true
+
+        // ── Cancel all pending async work items ──
+        // These fire-and-forget closures can keep the legacyScreenSaver process alive
+        // by preventing the run loop from becoming idle.
+        setupWorkItem?.cancel()
+        setupWorkItem = nil
+        recoveryWorkItem?.cancel()
+        recoveryWorkItem = nil
+        wakeWorkItem?.cancel()
+        wakeWorkItem = nil
+        isRecovering = false
+
+        // ── Remove all observers ──
         NSWorkspace.shared.notificationCenter.removeObserver(self)
         NotificationCenter.default.removeObserver(
             self, name: AVPlayerItem.playbackStalledNotification, object: nil)
@@ -347,14 +372,24 @@ public class BrownScreensaverView: ScreenSaverView {
             observedPlayer = nil
         }
 
+        // ── Aggressively tear down AVFoundation stack ──
+        // Order matters: disable looping first, then stop playback, then sever
+        // the player→item and layer→player connections to release hardware decoders.
         playerLooper?.disableLooping()
-        player?.pause()
-        player?.removeAllItems()
-        player?.replaceCurrentItem(with: nil)
-        player = nil
         playerLooper = nil
 
-        playerLayer?.removeFromSuperlayer()
+        if let p = player {
+            p.pause()
+            p.rate = 0  // belt-and-suspenders: force rate to 0
+            p.removeAllItems()
+            p.replaceCurrentItem(with: nil)
+        }
+        player = nil
+
+        if let pLayer = playerLayer {
+            pLayer.player = nil  // sever layer→player to release hardware decode session
+            pLayer.removeFromSuperlayer()
+        }
         playerLayer = nil
 
         // Release the audio lock if this instance owned it
@@ -362,6 +397,8 @@ public class BrownScreensaverView: ScreenSaverView {
             NSLog("BrownScreensaver: Instance releasing audio lock")
             BrownScreensaverView.activeAudioInstance = nil
         }
+
+        NSLog("BrownScreensaver: teardownPlayer complete — all AV resources released")
     }
 
     deinit {
@@ -392,12 +429,15 @@ public class BrownScreensaverView: ScreenSaverView {
             // the view to its window asynchronously. Starting AVFoundation too early
             // causes the player layer to render pure black. A short async delay fixes this.
             if #available(macOS 14.0, *) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                setupWorkItem?.cancel()
+                let work = DispatchWorkItem { [weak self] in
                     guard let self = self, self.isAnimating, !self.isTornDown else { return }
                     if self.player == nil {
                         self.setupVideoPlayer()
                     }
                 }
+                setupWorkItem = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1, execute: work)
             } else {
                 setupVideoPlayer()
             }
@@ -421,7 +461,13 @@ public class BrownScreensaverView: ScreenSaverView {
     }
 
     public override func animateOneFrame() {
-        // AVFoundation drives frames — nothing to do here
+        // AVFoundation drives frames — nothing to do here.
+        // Safety net: detect zombie state where the OS calls animateOneFrame
+        // but never called stopAnimation, and the view has no window.
+        if self.window == nil && !isTornDown {
+            NSLog("BrownScreensaver: animateOneFrame with no window — zombie detected, tearing down")
+            teardownPlayer()
+        }
     }
 
     public override var hasConfigureSheet: Bool { return false }
